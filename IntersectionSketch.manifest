@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "6e7b3377-57b1-4c91-8e34-42d5841d62b7",
+    "author": "Iago Andreu",
+    "description": {
+        "": "Sketch the curves where two bodies meet, exactly, as editable 3D splines."
+    },
+    "version": "1.0.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
