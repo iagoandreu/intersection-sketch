@@ -7,6 +7,7 @@ import adsk.core
 import adsk.fusion
 
 import json
+import math
 import os
 import traceback
 
@@ -384,9 +385,120 @@ def cylinders(app, job):
     return out
 
 
+def _v(p):
+    return [p.x * CM, p.y * CM, p.z * CM]
+
+
+def _u(v):
+    n = v.length or 1.0
+    return [v.x / n, v.y / n, v.z / n]
+
+
+def _surface(g):
+    st = g.surfaceType
+    S = adsk.core.SurfaceTypes
+    if st == S.PlaneSurfaceType:
+        return {'type': 'plane', 'origin': _v(g.origin), 'normal': _u(g.normal)}
+    if st == S.CylinderSurfaceType:
+        return {'type': 'cylinder', 'origin': _v(g.origin), 'axis': _u(g.axis), 'r': g.radius * CM}
+    if st == S.ConeSurfaceType:
+        return {'type': 'cone', 'origin': _v(g.origin), 'axis': _u(g.axis), 'r': g.radius * CM,
+                'half_angle_deg': math.degrees(g.halfAngle)}
+    if st == S.TorusSurfaceType:
+        return {'type': 'torus', 'origin': _v(g.origin), 'axis': _u(g.axis),
+                'R': g.majorRadius * CM, 'r': g.minorRadius * CM}
+    if st == S.SphereSurfaceType:
+        return {'type': 'sphere', 'origin': _v(g.origin), 'r': g.radius * CM}
+    return {'type': str(st)}
+
+
+def faces(app, job):
+    """Every face of the named root bodies: surface, area, bounding box."""
+    d = adsk.fusion.Design.cast(app.activeProduct)
+    out = {}
+    for name in job['names']:
+        b = d.rootComponent.bRepBodies.itemByName(name)
+        if b is None:
+            out[name] = None
+            continue
+        fl = []
+        for f in b.faces:
+            r = _surface(f.geometry)
+            bb = f.boundingBox
+            r.update({'area_mm2': round(f.area * 100, 3), 'loops': f.loops.count,
+                      'edges': f.edges.count, 'bbox': [_v(bb.minPoint), _v(bb.maxPoint)]})
+            fl.append(r)
+        out[name] = {'faces': fl, 'volume_mm3': b.volume * 1000 if b.isSolid else None,
+                     'visible': b.isVisible}
+    return out
+
+
+def sketch_geo(app, job):
+    """Sketch plane (world origin and normal), lines, circles and arcs in world mm."""
+    d = adsk.fusion.Design.cast(app.activeProduct)
+    out = {}
+    for name in job['names']:
+        sk = d.rootComponent.sketches.itemByName(name)
+        if sk is None:
+            out[name] = None
+            continue
+        o, x, y, z = sk.transform.getAsCoordinateSystem()
+        r = {'origin': _v(o), 'normal': _u(z), 'x': _u(x), 'lines': [], 'circles': [], 'arcs': []}
+        for c in sk.sketchCurves.sketchLines:
+            g = c.worldGeometry
+            r['lines'].append({'a': _v(g.startPoint), 'b': _v(g.endPoint),
+                               'construction': c.isConstruction, 'reference': c.isReference})
+        for c in sk.sketchCurves.sketchCircles:
+            g = c.worldGeometry
+            r['circles'].append({'c': _v(g.center), 'r': g.radius * CM, 'n': _u(g.normal),
+                                 'construction': c.isConstruction, 'reference': c.isReference})
+        for c in sk.sketchCurves.sketchArcs:
+            g = c.worldGeometry
+            r['arcs'].append({'c': _v(g.center), 'r': g.radius * CM})
+        out[name] = r
+    return out
+
+
+def feature_detail(app, job):
+    """Faces made by named timeline features (fillet faces, extrude start/end/side)."""
+    d = adsk.fusion.Design.cast(app.activeProduct)
+    tl = d.timeline
+    out = {}
+    want = set(job['names'])
+    for i in range(tl.count):
+        it = tl.item(i)
+        if it.name not in want:
+            continue
+        e = it.entity
+        r = {'type': e.objectType.split('::')[-1]}
+        for nm in ('faces', 'startFaces', 'endFaces', 'sideFaces'):
+            try:
+                coll = getattr(e, nm)
+            except Exception:
+                continue
+            fl = []
+            for k in range(coll.count):
+                f = coll.item(k)
+                s = _surface(f.geometry)
+                s['area_mm2'] = round(f.area * 100, 3)
+                try:
+                    s['body'] = f.body.name
+                except Exception:
+                    pass
+                fl.append(s)
+            r[nm] = fl
+        try:
+            r['participants'] = [b.name for b in e.participantBodies]
+        except Exception:
+            pass
+        out[it.name] = r
+    return out
+
+
 def run(app, job):
     res = {'timeline': timeline, 'bodies': bodies, 'params': params, 'export': export,
-           'sketch_curves': sketch_curves, 'cylinders': cylinders}[job['what']](app, job)
+           'sketch_curves': sketch_curves, 'cylinders': cylinders,
+           'faces': faces, 'sketch_geo': sketch_geo, 'feature_detail': feature_detail}[job['what']](app, job)
     if job.get('out'):
         with open(job['out'], 'w', encoding='utf-8') as fh:
             json.dump(res, fh, indent=1, default=str)
